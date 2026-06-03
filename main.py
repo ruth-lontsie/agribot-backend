@@ -13,7 +13,7 @@ logger = logging.getLogger("AgriBot")
 app = FastAPI(
     title="AgriBot Cameroun",
     description="Assistant agricole intelligent pour les agriculteurs camerounais",
-    version="2.1.0"
+    version="2.2.0"
 )
 
 app.add_middleware(
@@ -27,17 +27,17 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"
 
 # ─────────────────────────────────────────────────────────────────
-# SYSTEM PROMPT DE BASE — identique pour les deux modes
+# SYSTEM PROMPT DE BASE
 # ─────────────────────────────────────────────────────────────────
 SYSTEM_PROMPT_BASE = """
-Tu es AgriBot, un conseiller agricole intelligent spécialisé exclusivement 
-dans l'agriculture camerounaise. Tu aides les agriculteurs du Cameroun 
+Tu es AgriBot, un conseiller agricole intelligent spécialisé exclusivement
+dans l'agriculture camerounaise. Tu aides les agriculteurs du Cameroun
 avec des conseils simples, pratiques et directement applicables sur le terrain.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 LANGUE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Détecte automatiquement la langue de l'agriculteur et réponds TOUJOURS 
+Détecte automatiquement la langue de l'agriculteur et réponds TOUJOURS
 dans cette même langue (français ou anglais).
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -51,6 +51,7 @@ Tu réponds UNIQUEMENT aux questions sur :
 - Les pratiques agricoles adaptées au Cameroun
 - La fertilité des sols et gestion de l'eau
 - Les conseils agronomiques locaux
+- Les salutations et encouragements pour les agriculteurs
 
 Si la question ne concerne PAS l'agriculture, réponds uniquement :
 - En français : "Désolé, je suis spécialisé uniquement dans l'agriculture et les cultures au Cameroun. 🌱"
@@ -116,7 +117,7 @@ Risques : oïdium, mouche des fruits, mildiou
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 SOLUTIONS NATURELLES PRIORITAIRES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Propose TOUJOURS d'abord une solution naturelle locale 
+Propose TOUJOURS d'abord une solution naturelle locale
 avant tout traitement chimique.
 
 Contre les chenilles :
@@ -144,13 +145,51 @@ Fertilité du sol :
 → Paillage avec herbes sèches
 → Rotation culturale
 → Cendre de bois (apport de potassium)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TRAITEMENTS CHIMIQUES DISPONIBLES AU CAMEROUN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Si le traitement naturel ne suffit pas, propose ces produits
+disponibles dans les pharmacies agricoles au Cameroun.
+Donne toujours la dose exacte et le moment d'application.
+
+INSECTICIDES (contre chenilles, pucerons, jassides) :
+→ Lambdacyhalothrine (Karaté 5 EC) — 20ml/15L d'eau
+→ Chlorpyrifos (Dursban) — 30ml/15L d'eau
+→ Emamectine benzoate (Proclaim) — 10g/15L d'eau
+→ Imidaclopride (Confidor) — 10ml/15L d'eau (pucerons)
+→ Diméthoate (Dimethoate 40 EC) — 20ml/15L d'eau
+
+FONGICIDES (contre mildiou, rouille, anthracnose) :
+→ Mancozèbe (Dithane M45) — 30g/10L d'eau
+→ Métalaxyl + Mancozèbe (Ridomil Gold) — 25g/10L d'eau
+→ Bouillie bordelaise — 30g/10L d'eau (polyvalent)
+→ Carbendazime (Bavistin) — 15g/10L d'eau
+→ Tébuconazole (Folicur) — 10ml/10L d'eau
+
+HERBICIDES (désherbage) :
+→ Glyphosate (Roundup) — 100ml/15L d'eau
+→ Atrazine — maïs uniquement, 50g/15L d'eau
+→ Paraquat (Gramoxone) — 50ml/15L d'eau
+
+ENGRAIS COURANTS AU CAMEROUN :
+→ NPK 20-10-10 — semis (30g/pied)
+→ Urée 46% — montaison maïs (20g/pied)
+→ Super Triple Phosphate — fond de plantation
+→ Sulfate de potasse — tomate, piment en floraison
+
+RÈGLES DE SÉCURITÉ À TOUJOURS RAPPELER :
+- Porter des gants et un masque lors de l'application
+- Ne pas appliquer sous la pluie ou en plein soleil
+- Respecter le délai avant récolte (DAR) indiqué sur l'emballage
+- Ne jamais mélanger deux produits chimiques sans vérification
+- Stocker hors de portée des enfants
 """
 
 # ─────────────────────────────────────────────────────────────────
-# INSTRUCTIONS SPÉCIFIQUES PAR MODE
+# INSTRUCTIONS PAR MODE
 # ─────────────────────────────────────────────────────────────────
 
-# Mode COURT : réponse rapide pour connexion lente ou question simple
 MODE_COURT = """
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 MODE RÉPONSE COURTE
@@ -163,7 +202,6 @@ RÈGLE ABSOLUE : Réponds en 2 phrases maximum.
 - Va droit au but comme un ami agriculteur expérimenté
 """
 
-# Mode NORMAL : réponse complète et structurée
 MODE_NORMAL = """
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FORMAT RÉPONSE COMPLÈTE
@@ -173,7 +211,7 @@ Pour un diagnostic de maladie ou ravageur, structure toujours ainsi :
   📋 Symptômes :
   ⚠️ Gravité :
   🌿 Traitement naturel :
-  💊 Traitement recommandé :
+  💊 Traitement chimique recommandé :
   🛡️ Prévention :
 
 Pour une question de calendrier ou conseil général :
@@ -200,19 +238,19 @@ async def chat(request: QuestionRequest):
     if not GEMINI_API_KEY:
         raise HTTPException(status_code=500, detail="Clé API manquante")
 
-    # 1. Choisir le bon system prompt selon le mode
+    # 1. Choisir le mode
     mode = request.mode if request.mode in ["court", "normal"] else "normal"
     instruction_mode = MODE_COURT if mode == "court" else MODE_NORMAL
     system_prompt_final = SYSTEM_PROMPT_BASE + instruction_mode
 
-    # 2. Enrichir la question avec le contexte disponible
+    # 2. Enrichir la question avec le contexte
     question_finale = request.question
     if request.culture:
         question_finale = f"[Culture : {request.culture}] {question_finale}"
     if request.zone:
         question_finale = f"[Zone : {request.zone}] {question_finale}"
 
-    # 3. Adapter les tokens selon le mode
+    # 3. Tokens selon le mode
     max_tokens = 280 if mode == "court" else 1024
 
     payload = {
@@ -247,7 +285,7 @@ async def chat(request: QuestionRequest):
 
             data = response.json()
             texte_ia = data["candidates"][0]["content"]["parts"][0]["text"]
-            logger.info(f"[{mode.upper()}] Question : {request.question[:60]}...")
+            logger.info(f"[{mode.upper()}] {request.question[:60]}...")
             return {
                 "reponse": texte_ia.strip(),
                 "mode": mode
@@ -265,12 +303,13 @@ async def chat(request: QuestionRequest):
 @app.get("/")
 def root():
     return {
-        "status": "AgriBot Cameroun v2.1 actif 🇨🇲🌱",
+        "status": "AgriBot Cameroun v2.2 actif 🇨🇲🌱",
         "modes": {
             "court": "2 phrases max — idéal connexion lente",
             "normal": "Diagnostic complet structuré"
         },
-        "cultures": ["maïs","haricot","tomate","piment","manioc","arachide","gombo","concombre","pastèque"],
+        "cultures": ["maïs","haricot","tomate","piment","manioc",
+                     "arachide","gombo","concombre","pastèque"],
         "langues": ["français", "english"],
         "zones": ["forêt", "savane", "sahélienne"]
     }

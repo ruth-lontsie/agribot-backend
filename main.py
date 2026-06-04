@@ -1,6 +1,7 @@
 import os
 import httpx
 import logging
+import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -10,7 +11,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("AgriBot")
 
-app = FastAPI(title="AgriBot Cameroun", version="2.3.0")
+app = FastAPI(title="AgriBot Cameroun", version="2.3.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,11 +21,9 @@ app.add_middleware(
 )
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# On utilise v1beta pour avoir accès aux dernières fonctionnalités de filtrage
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
 
-# --- CHANGEMENT CRUCIAL : ON PASSE EN v1 STABLE ET MODÈLE FIXE ---
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-
-# On garde ton super SYSTEM_PROMPT (très complet, bravo !)
 # ─────────────────────────────────────────────────────────────────
 # SYSTEM PROMPT DE BASE
 # ─────────────────────────────────────────────────────────────────
@@ -231,49 +230,52 @@ async def chat(request: QuestionRequest):
     if not GEMINI_API_KEY:
         raise HTTPException(status_code=500, detail="Clé API manquante")
 
-    # 1. Préparation des instructions
     mode = request.mode if request.mode in ["court", "normal"] else "normal"
     instruction_mode = MODE_COURT if mode == "court" else MODE_NORMAL
     
-    # 2. Construction du prompt combiné (Méthode la plus stable pour v1)
     contexte = f"[Culture: {request.culture}] [Zone: {request.zone}] " if request.culture else ""
     
-    # On met le SYSTEM PROMPT directement dans le message utilisateur 
-    # pour éviter les erreurs de compatibilité v1beta
-    full_text_input = f"INSTRUCTIONS SYSTEME:\n{SYSTEM_PROMPT_BASE}\n{instruction_mode}\n\nCONTEXTE: {contexte}\nQUESTION: {request.question}"
+    # On construit le message
+    full_text_input = f"{SYSTEM_PROMPT_BASE}\n\n{instruction_mode}\n\nCONTEXTE ACTUEL: {contexte}\nQUESTION DE L'AGRICULTEUR: {request.question}"
 
     payload = {
-        "contents": [
-            {
-                "parts": [{"text": full_text_input}]
-            }
-        ],
+        "contents": [{"parts": [{"text": full_text_input}]}],
         "generationConfig": {
-            "temperature": 0.3,
-            "maxOutputTokens": 800 if mode == "normal" else 200,
-            "topP": 0.8
-        }
+            "temperature": 0.4,
+            "maxOutputTokens": 800 if mode == "normal" else 250,
+        },
+        # SÉCURITÉ : On demande à Google d'être moins strict sur les faux positifs
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+        ]
     }
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # On n'envoie plus la clé dans le Header ici car elle est dans l'URL 
-            # C'est plus simple et ça évite les erreurs 403/404 sur certaines clés
+        async with httpx.AsyncClient(timeout=40.0) as client:
             response = await client.post(GEMINI_URL, json=payload)
-
+            
             if response.status_code != 200:
                 logger.error(f"Erreur Google {response.status_code}: {response.text}")
-                # Fallback interne : si le code n'est pas 200, on ne crash pas le backend
-                raise HTTPException(status_code=502, detail=f"IA indisponible ({response.status_code})")
+                raise HTTPException(status_code=502, detail="Problème de communication avec l'IA")
 
             data = response.json()
-            texte_ia = data["candidates"][0]["content"]["parts"][0]["text"]
+            
+            # --- VÉRIFICATION DE LA RÉPONSE (Évite l'erreur 500) ---
+            if "candidates" not in data or not data["candidates"]:
+                logger.warning("Réponse bloquée par les filtres de sécurité de Google")
+                return {"reponse": "Désolé, je ne peux pas répondre à cette question spécifique. Restons focus sur l'agriculture camerounaise. 🌱"}
+
+            candidate = data["candidates"][0]
+            if "content" not in candidate:
+                return {"reponse": "L'IA n'a pas pu générer de texte. Essayez de reformuler. 🌱"}
+
+            texte_ia = candidate["content"]["parts"][0]["text"]
             return {"reponse": texte_ia.strip(), "mode": mode}
 
     except Exception as e:
-        logger.error(f"Erreur: {e}")
-        raise HTTPException(status_code=500, detail="Erreur serveur AgriBot")
-
-@app.get("/")
-def root():
-    return {"status": "AgriBot v2.3.0 Stable ✅"}
+        logger.error(f"ERREUR CRITIQUE BACKEND: {str(e)}")
+        # On renvoie l'erreur en clair pour que tu puisses la voir dans tes logs Flutter
+        raise HTTPException(status_code=500, detail=f"Erreur interne : {str(e)}")

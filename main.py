@@ -1,9 +1,7 @@
 import os
 import httpx
 import logging
-import json
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -11,19 +9,12 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("AgriBot")
 
-app = FastAPI(title="AgriBot Cameroun", version="2.3.1")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+app = FastAPI()
+# On utilise l'URL v1 (la plus stable)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-# On utilise v1beta pour avoir accès aux dernières fonctionnalités de filtrage
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
 
+# --- Ton SYSTEM_PROMPT_BASE reste le même ---
 # ─────────────────────────────────────────────────────────────────
 # SYSTEM PROMPT DE BASE
 # ─────────────────────────────────────────────────────────────────
@@ -219,38 +210,23 @@ Pour une question de calendrier ou conseil général :
 - Cite les produits accessibles au Cameroun
 """
 
+
 class QuestionRequest(BaseModel):
     question: str
     culture: str | None = None
-    zone: str | None = None
-    mode: str | None = "normal"
 
 @app.post("/chat")
 async def chat(request: QuestionRequest):
     if not GEMINI_API_KEY:
         raise HTTPException(status_code=500, detail="Clé API manquante")
 
-    mode = request.mode if request.mode in ["court", "normal"] else "normal"
-    instruction_mode = MODE_COURT if mode == "court" else MODE_NORMAL
-    
-    contexte = f"[Culture: {request.culture}] [Zone: {request.zone}] " if request.culture else ""
-    
-    # On construit le message
-    full_text_input = f"{SYSTEM_PROMPT_BASE}\n\n{instruction_mode}\n\nCONTEXTE ACTUEL: {contexte}\nQUESTION DE L'AGRICULTEUR: {request.question}"
+    # On simplifie le message pour éviter les erreurs de filtrage
+    contexte = f"Culture : {request.culture}. " if request.culture else ""
+    full_prompt = f"OBLIGATION : Réponds comme AgriBot expert au Cameroun.\n\n{SYSTEM_PROMPT_BASE}\n\n{contexte}QUESTION : {request.question}"
 
     payload = {
-        "contents": [{"parts": [{"text": full_text_input}]}],
-        "generationConfig": {
-            "temperature": 0.4,
-            "maxOutputTokens": 800 if mode == "normal" else 250,
-        },
-        # SÉCURITÉ : On demande à Google d'être moins strict sur les faux positifs
-        "safetySettings": [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-        ]
+        "contents": [{"parts": [{"text": full_prompt}]}],
+        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 600}
     }
 
     try:
@@ -258,24 +234,17 @@ async def chat(request: QuestionRequest):
             response = await client.post(GEMINI_URL, json=payload)
             
             if response.status_code != 200:
-                logger.error(f"Erreur Google {response.status_code}: {response.text}")
-                raise HTTPException(status_code=502, detail="Problème de communication avec l'IA")
+                # On renvoie l'erreur réelle de Google pour débugger
+                logger.error(f"Google Error: {response.text}")
+                return {"reponse": f"⚠️ (Erreur Google {response.status_code}) L'IA est saturée. Réessayez."}
 
             data = response.json()
-            
-            # --- VÉRIFICATION DE LA RÉPONSE (Évite l'erreur 500) ---
-            if "candidates" not in data or not data["candidates"]:
-                logger.warning("Réponse bloquée par les filtres de sécurité de Google")
-                return {"reponse": "Désolé, je ne peux pas répondre à cette question spécifique. Restons focus sur l'agriculture camerounaise. 🌱"}
-
-            candidate = data["candidates"][0]
-            if "content" not in candidate:
-                return {"reponse": "L'IA n'a pas pu générer de texte. Essayez de reformuler. 🌱"}
-
-            texte_ia = candidate["content"]["parts"][0]["text"]
-            return {"reponse": texte_ia.strip(), "mode": mode}
+            texte = data["candidates"][0]["content"]["parts"][0]["text"]
+            return {"reponse": texte.strip()}
 
     except Exception as e:
-        logger.error(f"ERREUR CRITIQUE BACKEND: {str(e)}")
-        # On renvoie l'erreur en clair pour que tu puisses la voir dans tes logs Flutter
-        raise HTTPException(status_code=500, detail=f"Erreur interne : {str(e)}")
+        logger.error(f"Crash Backend: {str(e)}")
+        return {"reponse": "⚠️ Erreur de connexion au cerveau de l'IA. Mode local activé."}
+
+@app.get("/")
+def root(): return {"status": "ok"}

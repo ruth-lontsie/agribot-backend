@@ -10,11 +10,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("AgriBot")
 
-app = FastAPI(
-    title="AgriBot Cameroun",
-    description="Assistant agricole intelligent pour les agriculteurs camerounais",
-    version="2.2.0"
-)
+app = FastAPI(title="AgriBot Cameroun", version="2.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -24,8 +20,11 @@ app.add_middleware(
 )
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"
 
+# --- CHANGEMENT CRUCIAL : ON PASSE EN v1 STABLE ET MODÈLE FIXE ---
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+
+# On garde ton super SYSTEM_PROMPT (très complet, bravo !)
 # ─────────────────────────────────────────────────────────────────
 # SYSTEM PROMPT DE BASE
 # ─────────────────────────────────────────────────────────────────
@@ -221,95 +220,60 @@ Pour une question de calendrier ou conseil général :
 - Cite les produits accessibles au Cameroun
 """
 
-# ─────────────────────────────────────────────────────────────────
-# MODÈLE DE DONNÉES
-# ─────────────────────────────────────────────────────────────────
 class QuestionRequest(BaseModel):
     question: str
-    culture: str | None = None   # ex: "maïs", "tomate"
-    zone: str | None = None      # ex: "forêt", "savane", "sahel"
-    mode: str | None = "normal"  # "court" ou "normal"
+    culture: str | None = None
+    zone: str | None = None
+    mode: str | None = "normal"
 
-# ─────────────────────────────────────────────────────────────────
-# ENDPOINT PRINCIPAL
-# ─────────────────────────────────────────────────────────────────
 @app.post("/chat")
 async def chat(request: QuestionRequest):
     if not GEMINI_API_KEY:
         raise HTTPException(status_code=500, detail="Clé API manquante")
 
-    # 1. Choisir le mode
+    # 1. Préparation des instructions
     mode = request.mode if request.mode in ["court", "normal"] else "normal"
     instruction_mode = MODE_COURT if mode == "court" else MODE_NORMAL
-    system_prompt_final = SYSTEM_PROMPT_BASE + instruction_mode
-
-    # 2. Enrichir la question avec le contexte
-    question_finale = request.question
-    if request.culture:
-        question_finale = f"[Culture : {request.culture}] {question_finale}"
-    if request.zone:
-        question_finale = f"[Zone : {request.zone}] {question_finale}"
-
-    # 3. Tokens selon le mode
-    max_tokens = 280 if mode == "court" else 1024
+    
+    # 2. Construction du prompt combiné (Méthode la plus stable pour v1)
+    contexte = f"[Culture: {request.culture}] [Zone: {request.zone}] " if request.culture else ""
+    
+    # On met le SYSTEM PROMPT directement dans le message utilisateur 
+    # pour éviter les erreurs de compatibilité v1beta
+    full_text_input = f"INSTRUCTIONS SYSTEME:\n{SYSTEM_PROMPT_BASE}\n{instruction_mode}\n\nCONTEXTE: {contexte}\nQUESTION: {request.question}"
 
     payload = {
-        "system_instruction": {
-            "parts": [{"text": system_prompt_final}]
-        },
         "contents": [
-            {"parts": [{"text": question_finale}]}
+            {
+                "parts": [{"text": full_text_input}]
+            }
         ],
         "generationConfig": {
-            "temperature": 0.4,
-            "maxOutputTokens": max_tokens,
-            "topP": 0.9
+            "temperature": 0.3,
+            "maxOutputTokens": 800 if mode == "normal" else 200,
+            "topP": 0.8
         }
     }
 
-    headers = {
-        "Content-Type": "application/json",
-        "X-goog-api-key": GEMINI_API_KEY
-    }
-
     try:
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            response = await client.post(GEMINI_URL, json=payload, headers=headers)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # On n'envoie plus la clé dans le Header ici car elle est dans l'URL 
+            # C'est plus simple et ça évite les erreurs 403/404 sur certaines clés
+            response = await client.post(GEMINI_URL, json=payload)
 
             if response.status_code != 200:
-                logger.error(f"Erreur Gemini : {response.text}")
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Erreur Gemini : {response.status_code}"
-                )
+                logger.error(f"Erreur Google {response.status_code}: {response.text}")
+                # Fallback interne : si le code n'est pas 200, on ne crash pas le backend
+                raise HTTPException(status_code=502, detail=f"IA indisponible ({response.status_code})")
 
             data = response.json()
             texte_ia = data["candidates"][0]["content"]["parts"][0]["text"]
-            logger.info(f"[{mode.upper()}] {request.question[:60]}...")
-            return {
-                "reponse": texte_ia.strip(),
-                "mode": mode
-            }
+            return {"reponse": texte_ia.strip(), "mode": mode}
 
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Erreur inattendue : {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="AgriBot a rencontré un problème. Réessayez."
-        )
+        logger.error(f"Erreur: {e}")
+        raise HTTPException(status_code=500, detail="Erreur serveur AgriBot")
 
 @app.get("/")
 def root():
-    return {
-        "status": "AgriBot Cameroun v2.2 actif 🇨🇲🌱",
-        "modes": {
-            "court": "2 phrases max — idéal connexion lente",
-            "normal": "Diagnostic complet structuré"
-        },
-        "cultures": ["maïs","haricot","tomate","piment","manioc",
-                     "arachide","gombo","concombre","pastèque"],
-        "langues": ["français", "english"],
-        "zones": ["forêt", "savane", "sahélienne"]
-    }
+    return {"status": "AgriBot v2.3.0 Stable ✅"}

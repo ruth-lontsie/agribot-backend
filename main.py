@@ -22,7 +22,8 @@ app.add_middleware(
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # URL FORCÉE EN V1 STABLE
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"
+
 # ─────────────────────────────────────────────────────────────────
 # SYSTEM PROMPT DE BASE
 # ─────────────────────────────────────────────────────────────────
@@ -218,7 +219,6 @@ Pour une question de calendrier ou conseil général :
 - Cite les produits accessibles au Cameroun
 """
 
-
 class QuestionRequest(BaseModel):
     question: str
     culture: str | None = None
@@ -228,40 +228,40 @@ async def chat(request: QuestionRequest):
     if not GEMINI_API_KEY:
         raise HTTPException(status_code=500, detail="Clé API manquante")
 
-    # On utilise v1beta qui est souvent la seule version acceptant les clés Cloud
-    DEBUG_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-
     contexte = f"Culture : {request.culture}. " if request.culture else ""
-    full_prompt = f"Tu es AgriBot Cameroun. Réponds en 3 phrases.\n{contexte}Question : {request.question}"
+    full_prompt = f"{SYSTEM_PROMPT_BASE}\n\n{contexte}Question : {request.question}"
 
+    # Structure du message conforme au cURL
     payload = {
-        "contents": [{"parts": [{"text": full_prompt}]}]
+        "contents": [
+            {
+                "parts": [{"text": full_prompt}]
+            }
+        ]
+    }
+
+    # En-tête recommandé par Google pour les clés AQ.
+    headers = {
+        "Content-Type": "application/json",
+        "X-goog-api-key": GEMINI_API_KEY
     }
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(DEBUG_URL, json=payload)
+        async with httpx.AsyncClient(timeout=40.0) as client:
+            logger.info(f"🚀 Envoi vers Gemini Flash Latest...")
+            response = await client.post(GEMINI_URL, json=payload, headers=headers)
             
             if response.status_code != 200:
-                # IMPORTANT : On log l'erreur réelle dans Railway
-                logger.error(f"Google Response: {response.text}")
-                
-                # Si 404, on tente le modèle 'gemini-pro' (très compatible)
-                if response.status_code == 404:
-                    RETRY_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
-                    retry_resp = await client.post(RETRY_URL, json=payload)
-                    if retry_resp.status_code == 200:
-                        data = retry_resp.json()
-                        return {"reponse": data["candidates"][0]["content"]["parts"][0]["text"].strip()}
-
-                return {"reponse": f"⚠️ Erreur IA ({response.status_code}). Vérifiez l'activation du modèle dans Google Cloud."}
+                logger.error(f"Erreur Google {response.status_code}: {response.text}")
+                return {"reponse": f"⚠️ Désolé, je rencontre une erreur {response.status_code}. Réessayez dans 1 minute."}
 
             data = response.json()
-            return {"reponse": data["candidates"][0]["content"]["parts"][0]["text"].strip()}
+            texte = data["candidates"][0]["content"]["parts"][0]["text"]
+            return {"reponse": texte.strip()}
 
     except Exception as e:
-        return {"reponse": "⚠️ Erreur technique backend."}
+        logger.error(f"Crash: {str(e)}")
+        return {"reponse": "⚠️ Une erreur technique empêche la réponse en ligne."}
 
-        
 @app.get("/")
-def root(): return {"status": "Backend pret", "key_prefix": GEMINI_API_KEY[:4] if GEMINI_API_KEY else "none"}
+def root(): return {"status": "Backend AgriBot 2.5.0 prêt ✅"}

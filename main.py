@@ -228,31 +228,40 @@ async def chat(request: QuestionRequest):
     if not GEMINI_API_KEY:
         raise HTTPException(status_code=500, detail="Clé API manquante")
 
+    # On utilise v1beta qui est souvent la seule version acceptant les clés Cloud
+    DEBUG_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+
     contexte = f"Culture : {request.culture}. " if request.culture else ""
-    # On simplifie le prompt pour la version v1
-    full_prompt = f"Tu es AgriBot, expert au Cameroun. Réponds en 3 phrases.\n{contexte}Question : {request.question}"
+    full_prompt = f"Tu es AgriBot Cameroun. Réponds en 3 phrases.\n{contexte}Question : {request.question}"
 
     payload = {
-        "contents": [{"parts": [{"text": full_prompt}]}],
-        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 400}
+        "contents": [{"parts": [{"text": full_prompt}]}]
     }
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(GEMINI_URL, json=payload)
+            response = await client.post(DEBUG_URL, json=payload)
             
             if response.status_code != 200:
-                logger.error(f"Google Error {response.status_code}: {response.text}")
-                # On retourne l'erreur pour voir si c'est tjs 404
-                return {"reponse": f"⚠️ Erreur IA ({response.status_code}). Vérifiez l'activation de l'API dans Google Cloud."}
+                # IMPORTANT : On log l'erreur réelle dans Railway
+                logger.error(f"Google Response: {response.text}")
+                
+                # Si 404, on tente le modèle 'gemini-pro' (très compatible)
+                if response.status_code == 404:
+                    RETRY_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
+                    retry_resp = await client.post(RETRY_URL, json=payload)
+                    if retry_resp.status_code == 200:
+                        data = retry_resp.json()
+                        return {"reponse": data["candidates"][0]["content"]["parts"][0]["text"].strip()}
+
+                return {"reponse": f"⚠️ Erreur IA ({response.status_code}). Vérifiez l'activation du modèle dans Google Cloud."}
 
             data = response.json()
-            texte = data["candidates"][0]["content"]["parts"][0]["text"]
-            return {"reponse": texte.strip()}
+            return {"reponse": data["candidates"][0]["content"]["parts"][0]["text"].strip()}
 
     except Exception as e:
-        logger.error(f"Crash: {str(e)}")
-        return {"reponse": "⚠️ Mode local activé suite à une erreur technique."}
+        return {"reponse": "⚠️ Erreur technique backend."}
 
+        
 @app.get("/")
 def root(): return {"status": "Backend pret", "key_prefix": GEMINI_API_KEY[:4] if GEMINI_API_KEY else "none"}

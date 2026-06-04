@@ -221,7 +221,7 @@ async def chat(request: QuestionRequest):
         question_finale = f"[Zone : {request.zone}] {question_finale}"
 
     # Tokens selon le mode
-    max_tokens = 300 if request.mode == "court" else 1024
+    max_tokens = 1024 if request.mode == "court" else 1500
 
     # Instruction de longueur selon le mode
     instruction_longueur = ""
